@@ -65,8 +65,6 @@ return __turbopack_context__.a(async (__turbopack_handle_async_dependencies__, _
 __turbopack_context__.s([
     "closeBrowser",
     ()=>closeBrowser,
-    "generateMockJobs",
-    ()=>generateMockJobs,
     "scrapeUpworkJobs",
     ()=>scrapeUpworkJobs
 ]);
@@ -79,20 +77,60 @@ var __turbopack_async_dependencies__ = __turbopack_handle_async_dependencies__([
 ;
 ;
 let browser = null;
+let isAuthenticated = false;
+// Get random number for mouse movements
+function getRndm(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+// Random delay to mimic human behavior (longer delays)
+function randomDelay(min = 2000, max = 5000) {
+    return new Promise((resolve)=>setTimeout(resolve, Math.random() * (max - min) + min));
+}
+// Generate random viewport size
+function getRandomViewport() {
+    const viewports = [
+        {
+            width: 1920,
+            height: 1080
+        },
+        {
+            width: 1366,
+            height: 768
+        },
+        {
+            width: 1536,
+            height: 864
+        },
+        {
+            width: 1440,
+            height: 900
+        }
+    ];
+    return viewports[Math.floor(Math.random() * viewports.length)];
+}
+// Get random user agent (updated to latest versions)
+function getRandomUserAgent() {
+    const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0'
+    ];
+    return userAgents[Math.floor(Math.random() * userAgents.length)];
+}
 async function getBrowser() {
     if (!browser) {
-        console.log('[Scraper] Launching Puppeteer browser...');
+        console.log('[Scraper] Launching Puppeteer browser with stealth mode...');
         browser = await __TURBOPACK__imported__module__$5b$externals$5d2f$puppeteer__$5b$external$5d$__$28$puppeteer$2c$__esm_import$29$__["default"].launch({
-            headless: true,
+            headless: false,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--disable-gpu',
-                '--window-size=1920x1080',
-                '--disable-web-security',
-                '--disable-features=IsolateOrigins,site-per-process'
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--window-size=1920,1080',
+                '--lang=en-US,en'
             ]
         });
         console.log('[Scraper] Browser launched successfully');
@@ -103,51 +141,177 @@ async function closeBrowser() {
     if (browser) {
         await browser.close();
         browser = null;
+        isAuthenticated = false;
     }
 }
-function extractJobIdFromUrl(url) {
-    if (!url) return null;
-    const match = url.match(/~([a-zA-Z0-9]+)/);
-    return match ? match[1] : null;
+// Login to Upwork (CRITICAL: This significantly improves scraping success)
+async function loginToUpwork(page, email, password) {
+    if (isAuthenticated) {
+        console.log('[Scraper] Already authenticated');
+        return;
+    }
+    if (!email || !password) {
+        console.log('[Scraper] No credentials provided, skipping authentication');
+        return;
+    }
+    try {
+        console.log('[Scraper] Logging into Upwork...');
+        await page.goto('https://www.upwork.com/ab/account-security/login', {
+            waitUntil: 'networkidle2',
+            timeout: 60000
+        });
+        await randomDelay(2000, 4000);
+        // Enter email
+        await page.waitForSelector('#login_username', {
+            visible: true,
+            timeout: 10000
+        });
+        await page.type('#login_username', email, {
+            delay: getRndm(50, 150)
+        });
+        await randomDelay(1000, 2000);
+        // Click continue with email
+        await page.click('#login_password_continue');
+        await randomDelay(2000, 3000);
+        // Random mouse movements (human-like behavior)
+        for(let i = 0; i < 5; i++){
+            await page.mouse.move(getRndm(100, 1000), getRndm(100, 800));
+            await randomDelay(500, 1000);
+        }
+        // Enter password
+        await page.waitForSelector('#login_password', {
+            visible: true,
+            timeout: 10000
+        });
+        await page.type('#login_password', password, {
+            delay: getRndm(50, 150)
+        });
+        await randomDelay(1000, 2000);
+        // Click login
+        await page.click('#login_control_continue');
+        // More random mouse movements
+        for(let i = 0; i < 5; i++){
+            await page.mouse.move(getRndm(100, 1500), getRndm(100, 900));
+            await randomDelay(800, 1500);
+        }
+        // Wait for navigation to complete
+        await randomDelay(5000, 8000);
+        isAuthenticated = true;
+        console.log('[Scraper] Successfully authenticated');
+    } catch (error) {
+        console.error('[Scraper] Login failed:', error.message);
+        throw new Error('Authentication required but failed');
+    }
 }
-function buildCanonicalJobUrl(jobId) {
-    return `https://www.upwork.com/jobs/~${jobId}`;
+function buildFullJobUrl(rawUrl) {
+    if (!rawUrl) return '';
+    if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
+        return rawUrl;
+    }
+    if (rawUrl.startsWith('/')) {
+        return `https://www.upwork.com${rawUrl}`;
+    }
+    return `https://www.upwork.com/${rawUrl}`;
 }
 async function scrapeUpworkJobs(options) {
-    const { url, limit, sortBy } = options;
+    const { url, limit, sortBy, credentials } = options;
     const jobs = [];
     let page = null;
     try {
         const browserInstance = await getBrowser();
         page = await browserInstance.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-        await page.setViewport({
-            width: 1920,
-            height: 1080
+        // Set random viewport
+        const viewport = getRandomViewport();
+        await page.setViewport(viewport);
+        // Set random user agent
+        const userAgent = getRandomUserAgent();
+        await page.setUserAgent(userAgent);
+        // Remove webdriver detection
+        await page.evaluateOnNewDocument(()=>{
+            // Remove webdriver flag
+            Object.defineProperty(navigator, 'webdriver', {
+                get: ()=>false
+            });
+            // Add chrome object
+            window.chrome = {
+                runtime: {}
+            };
+            // Mock permissions
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters)=>parameters.name === 'notifications' ? Promise.resolve({
+                    state: Notification.permission
+                }) : originalQuery(parameters);
+            // Mock plugins
+            Object.defineProperty(navigator, 'plugins', {
+                get: ()=>[
+                        1,
+                        2,
+                        3,
+                        4,
+                        5
+                    ]
+            });
+            // Mock languages
+            Object.defineProperty(navigator, 'languages', {
+                get: ()=>[
+                        'en-US',
+                        'en'
+                    ]
+            });
+            // Mock platform
+            Object.defineProperty(navigator, 'platform', {
+                get: ()=>'Win32'
+            });
         });
+        // Set realistic headers
         await page.setExtraHTTPHeaders({
             'Accept-Language': 'en-US,en;q=0.9',
-            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'none',
+            'sec-fetch-user': '?1',
+            'upgrade-insecure-requests': '1'
         });
+        // CRITICAL: Login to Upwork first (improves success rate significantly)
+        if (credentials?.email && credentials?.password) {
+            await loginToUpwork(page, credentials.email, credentials.password);
+        } else {
+            console.log('[Scraper] WARNING: No credentials provided. Scraping without authentication may have limited success.');
+        }
         console.log(`[Scraper] Navigating to: ${url}`);
+        // Add random delay before navigation (rate limiting)
+        await randomDelay(3000, 6000);
         let navigationSuccess = false;
         let retries = 3;
         while(retries > 0 && !navigationSuccess){
             try {
                 await page.goto(url, {
-                    waitUntil: 'domcontentloaded',
-                    timeout: 45000
+                    waitUntil: 'networkidle2',
+                    timeout: 60000
                 });
                 navigationSuccess = true;
             } catch (navError) {
                 retries--;
                 console.log(`[Scraper] Navigation attempt failed, ${retries} retries left`);
                 if (retries === 0) throw navError;
-                await new Promise((resolve)=>setTimeout(resolve, 2000));
+                await randomDelay(5000, 10000); // Longer delay between retries
             }
+        }
+        // Longer wait for page to fully load
+        await randomDelay(4000, 7000);
+        // Simulate human mouse movements
+        for(let i = 0; i < 8; i++){
+            await page.mouse.move(getRndm(100, 1500), getRndm(100, 900));
+            await randomDelay(300, 800);
         }
         console.log('[Scraper] Waiting for job listings to load...');
         const possibleSelectors = [
+            'section[data-test="JobTile"]',
             '[data-test="JobTile"]',
             '.job-tile',
             'article[data-ev-label]',
@@ -159,7 +323,7 @@ async function scrapeUpworkJobs(options) {
         for (const selector of possibleSelectors){
             try {
                 await page.waitForSelector(selector, {
-                    timeout: 10000
+                    timeout: 15000
                 });
                 foundSelector = selector;
                 console.log(`[Scraper] Found jobs using selector: ${selector}`);
@@ -169,21 +333,31 @@ async function scrapeUpworkJobs(options) {
             }
         }
         if (!foundSelector) {
-            console.log('[Scraper] No standard job selectors found, attempting generic extraction...');
+            console.log('[Scraper] No job selectors found - possible blocking or empty results');
+            // Take screenshot for debugging
+            await page.screenshot({
+                path: 'debug-screenshot.png'
+            });
+            throw new Error('Could not find job listings. Possible bot detection or no results.');
         }
-        await new Promise((resolve)=>setTimeout(resolve, 3000));
+        // Random delay before scrolling
+        await randomDelay(2000, 4000);
+        // Scroll to load more jobs (if needed) - smaller batches
         if (limit > 10) {
             console.log('[Scraper] Scrolling to load more jobs...');
-            await autoScroll(page, Math.min(limit / 10, 5));
+            const scrolls = Math.min(Math.ceil(limit / 10), 3); // Max 3 scrolls (smaller batches)
+            await humanLikeScroll(page, scrolls);
         }
+        // Another delay before extraction
+        await randomDelay(3000, 5000);
         console.log('[Scraper] Extracting job data...');
         const extractedJobs = await page.evaluate(()=>{
-            const jobElements = document.querySelectorAll('[data-test="JobTile"], .job-tile, article[data-ev-label="search_results_impression"], section.air3-card-section, .up-card-section');
+            const jobElements = document.querySelectorAll('section[data-test="JobTile"], [data-test="JobTile"], .job-tile, article[data-ev-label="search_results_impression"], section.air3-card-section, .up-card-section');
             console.log(`Found ${jobElements.length} job elements`);
             const jobs = [];
             jobElements.forEach((element)=>{
                 try {
-                    const titleElement = element.querySelector('[data-test="job-title-link"]') || element.querySelector('[data-test="JobTile-link"]') || element.querySelector('h2 a, h3 a') || element.querySelector('.job-title a') || element.querySelector('a[href*="/jobs/"]');
+                    const titleElement = element.querySelector('[data-test="job-title-link"]') || element.querySelector('[data-test="JobTile-link"]') || element.querySelector('h2 a, h3 a, h4 a') || element.querySelector('.job-tile-title a') || element.querySelector('.job-title a') || element.querySelector('a[href*="/jobs/"]');
                     const title = titleElement?.textContent?.trim() || '';
                     const jobUrl = titleElement?.getAttribute('href') || '';
                     if (!title) return;
@@ -239,8 +413,7 @@ async function scrapeUpworkJobs(options) {
         console.log(`[Scraper] Extracted ${extractedJobs.length} jobs from page`);
         const limitedJobs = limit === 0 ? extractedJobs : extractedJobs.slice(0, limit);
         for (const job of limitedJobs){
-            const jobId = extractJobIdFromUrl(job.rawUrl);
-            const canonicalUrl = jobId ? buildCanonicalJobUrl(jobId) : job.rawUrl.startsWith('http') ? job.rawUrl : job.rawUrl ? `https://www.upwork.com${job.rawUrl}` : '';
+            const fullUrl = buildFullJobUrl(job.rawUrl);
             jobs.push({
                 id: (0, __TURBOPACK__imported__module__$5b$externals$5d2f$crypto__$5b$external$5d$__$28$crypto$2c$__cjs$29$__["randomUUID"])(),
                 title: job.title,
@@ -255,7 +428,7 @@ async function scrapeUpworkJobs(options) {
                 jobType: job.jobType || undefined,
                 experienceLevel: job.experienceLevel || undefined,
                 duration: job.duration || undefined,
-                url: canonicalUrl
+                url: fullUrl
             });
         }
         if (sortBy === 'budget') {
@@ -263,6 +436,26 @@ async function scrapeUpworkJobs(options) {
                 const budgetA = parseFloat((a.budget || '0').replace(/[^0-9.]/g, '')) || 0;
                 const budgetB = parseFloat((b.budget || '0').replace(/[^0-9.]/g, '')) || 0;
                 return budgetB - budgetA;
+            });
+        } else if (sortBy === 'date') {
+            const dateOrder = {
+                'Just now': 0,
+                '1 minute ago': 1,
+                '5 minutes ago': 2,
+                '10 minutes ago': 3,
+                '1 hour ago': 4,
+                '2 hours ago': 5,
+                '3 hours ago': 6,
+                'Today': 7,
+                'Yesterday': 8,
+                '2 days ago': 9,
+                '3 days ago': 10,
+                'Recently': 11
+            };
+            jobs.sort((a, b)=>{
+                const orderA = dateOrder[a.postedDate] ?? 99;
+                const orderB = dateOrder[b.postedDate] ?? 99;
+                return orderA - orderB;
             });
         }
         console.log(`[Scraper] Successfully processed ${jobs.length} jobs`);
@@ -276,151 +469,22 @@ async function scrapeUpworkJobs(options) {
         }
     }
 }
-async function autoScroll(page, maxScrolls = 5) {
+// Human-like scrolling with random delays
+async function humanLikeScroll(page, maxScrolls = 3) {
     await page.evaluate(async (maxScrolls)=>{
         await new Promise((resolve)=>{
-            let totalHeight = 0;
             let scrollCount = 0;
-            const distance = 500;
+            const distance = 300; // Smaller scrolls
             const timer = setInterval(()=>{
-                const scrollHeight = document.body.scrollHeight;
                 window.scrollBy(0, distance);
-                totalHeight += distance;
                 scrollCount++;
-                if (totalHeight >= scrollHeight - window.innerHeight || scrollCount >= maxScrolls) {
+                if (scrollCount >= maxScrolls * 3) {
                     clearInterval(timer);
                     resolve();
                 }
-            }, 500);
+            }, Math.random() * 1000 + 1000); // 1-2 second delays
         });
     }, maxScrolls);
-}
-function generateMockJobs(count) {
-    const mockTitles = [
-        'React Developer Needed for E-commerce Platform',
-        'Full Stack Developer for SaaS Application',
-        'Node.js Backend Engineer',
-        'Senior Frontend Developer - Vue.js',
-        'Mobile App Developer (React Native)',
-        'Python Developer for Data Analysis',
-        'WordPress Developer for Blog Migration',
-        'JavaScript Expert for Browser Extension',
-        'UI/UX Designer with Figma Experience',
-        'TypeScript Developer for API Development'
-    ];
-    const mockSkills = [
-        [
-            'React',
-            'TypeScript',
-            'Node.js',
-            'Redux'
-        ],
-        [
-            'Vue.js',
-            'JavaScript',
-            'CSS',
-            'Vuex'
-        ],
-        [
-            'Python',
-            'Django',
-            'PostgreSQL',
-            'REST API'
-        ],
-        [
-            'React Native',
-            'iOS',
-            'Android',
-            'Mobile Development'
-        ],
-        [
-            'Node.js',
-            'Express',
-            'MongoDB',
-            'GraphQL'
-        ],
-        [
-            'WordPress',
-            'PHP',
-            'MySQL',
-            'WooCommerce'
-        ],
-        [
-            'JavaScript',
-            'HTML',
-            'CSS',
-            'Chrome Extension'
-        ],
-        [
-            'Python',
-            'Pandas',
-            'NumPy',
-            'Data Analysis'
-        ],
-        [
-            'Figma',
-            'UI Design',
-            'UX Research',
-            'Prototyping'
-        ],
-        [
-            'TypeScript',
-            'REST API',
-            'GraphQL',
-            'Node.js'
-        ]
-    ];
-    const mockDescriptions = [
-        'We are looking for an experienced developer to build a scalable e-commerce platform. The ideal candidate should have expertise in modern web technologies and a strong portfolio.',
-        'Join our team to develop a cutting-edge SaaS application. We need someone who can work independently and deliver high-quality code.',
-        "We're building an innovative product and need a talented developer to help bring our vision to life. Remote work is welcome.",
-        'Looking for a skilled professional to help with our web application development. Must have excellent communication skills.',
-        'Seeking a developer to join our growing startup. This is a long-term opportunity with potential for advancement.'
-    ];
-    const jobs = [];
-    for(let i = 0; i < count; i++){
-        const titleIndex = i % mockTitles.length;
-        const descIndex = i % mockDescriptions.length;
-        const mockJobId = (0, __TURBOPACK__imported__module__$5b$externals$5d2f$crypto__$5b$external$5d$__$28$crypto$2c$__cjs$29$__["randomUUID"])().replace(/-/g, '').slice(0, 18);
-        jobs.push({
-            id: (0, __TURBOPACK__imported__module__$5b$externals$5d2f$crypto__$5b$external$5d$__$28$crypto$2c$__cjs$29$__["randomUUID"])(),
-            title: mockTitles[titleIndex],
-            description: mockDescriptions[descIndex],
-            budget: Math.random() > 0.5 ? `$${Math.floor(Math.random() * 5000) + 500}` : undefined,
-            hourlyRate: Math.random() > 0.5 ? `$${Math.floor(Math.random() * 100) + 20}` : undefined,
-            clientName: `Client ${i + 1}`,
-            clientCountry: [
-                'United States',
-                'United Kingdom',
-                'Canada',
-                'Australia',
-                'Germany'
-            ][Math.floor(Math.random() * 5)],
-            clientVerified: Math.random() > 0.3,
-            postedDate: [
-                'Just now',
-                '1 hour ago',
-                '3 hours ago',
-                'Yesterday',
-                '2 days ago'
-            ][Math.floor(Math.random() * 5)],
-            skills: mockSkills[titleIndex],
-            jobType: Math.random() > 0.5 ? 'Fixed Price' : 'Hourly',
-            experienceLevel: [
-                'Entry Level',
-                'Intermediate',
-                'Expert'
-            ][Math.floor(Math.random() * 3)],
-            duration: [
-                'Less than 1 month',
-                '1 to 3 months',
-                '3 to 6 months',
-                'More than 6 months'
-            ][Math.floor(Math.random() * 4)],
-            url: `https://www.upwork.com/jobs/~${mockJobId}`
-        });
-    }
-    return jobs;
 }
 __turbopack_async_result__();
 } catch(e) { __turbopack_async_result__(e); } }, false);}),
@@ -463,6 +527,8 @@ function clearJobs() {
 "use strict";
 
 __turbopack_context__.s([
+    "errorResponseSchema",
+    ()=>errorResponseSchema,
     "jobSchema",
     ()=>jobSchema,
     "scrapeRequestSchema",
@@ -470,43 +536,48 @@ __turbopack_context__.s([
     "scrapeResponseSchema",
     ()=>scrapeResponseSchema
 ]);
-var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/zod/lib/index.mjs [app-route] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__ = __turbopack_context__.i("[project]/node_modules/zod/v3/external.js [app-route] (ecmascript) <export * as z>");
 ;
-const jobSchema = __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].object({
-    id: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string(),
-    title: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string(),
-    description: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string(),
-    budget: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string().optional(),
-    hourlyRate: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string().optional(),
-    clientName: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string().optional(),
-    clientCountry: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string().optional(),
-    clientVerified: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].boolean().default(false),
-    postedDate: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string(),
-    skills: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].array(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string()).default([]),
-    jobType: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string().optional(),
-    experienceLevel: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string().optional(),
-    duration: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string().optional(),
-    url: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string()
-});
-const scrapeRequestSchema = __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].object({
-    url: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string().url('Please enter a valid Upwork URL'),
-    limit: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].number().min(5, 'Minimum scrape limit is 5').default(10),
-    sortBy: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].enum([
-        'date',
+const scrapeRequestSchema = __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].object({
+    url: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string().url('Invalid URL format'),
+    limit: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].number().int().min(0).max(100).default(10),
+    sortBy: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].enum([
+        'recent',
         'budget',
-        'relevance'
-    ]).default('date')
+        'date'
+    ]).default('recent'),
+    useMockData: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].boolean().optional().default(false),
+    credentials: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].object({
+        email: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string().email().optional(),
+        password: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string().optional()
+    }).optional()
 });
-const scrapeResponseSchema = __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].object({
-    jobs: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].array(jobSchema),
-    totalFound: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].number(),
-    scrapedCount: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].number(),
-    status: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].enum([
-        'success',
-        'error',
-        'partial'
-    ]),
-    message: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$lib$2f$index$2e$mjs__$5b$app$2d$route$5d$__$28$ecmascript$29$__["z"].string().optional()
+const jobSchema = __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].object({
+    id: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string(),
+    title: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string(),
+    description: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string(),
+    budget: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string().optional(),
+    hourlyRate: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string().optional(),
+    clientName: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string().optional(),
+    clientCountry: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string().optional(),
+    clientVerified: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].boolean(),
+    postedDate: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string(),
+    skills: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].array(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string()),
+    jobType: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string().optional(),
+    experienceLevel: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string().optional(),
+    duration: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string().optional(),
+    url: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string()
+});
+const scrapeResponseSchema = __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].object({
+    success: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].boolean(),
+    jobs: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].array(jobSchema),
+    count: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].number(),
+    message: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string().optional()
+});
+const errorResponseSchema = __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].object({
+    success: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].boolean(),
+    error: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].string(),
+    details: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$zod$2f$v3$2f$external$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__$3c$export__$2a$__as__z$3e$__["z"].any().optional()
 });
 }),
 "[project]/app/api/scrape/route.js [app-route] (ecmascript)", ((__turbopack_context__) => {
@@ -534,28 +605,40 @@ async function POST(request) {
     try {
         const body = await request.json();
         const validatedData = __TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$schema$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["scrapeRequestSchema"].parse(body);
-        const { url, limit, sortBy } = validatedData;
+        const { url, limit, sortBy, credentials } = validatedData;
         console.log(`[API] Scrape request: ${url}, limit: ${limit}, sortBy: ${sortBy}`);
         let jobs = [];
         let status = 'success';
         let message = undefined;
         try {
+            // Pass credentials to scraper if provided
             jobs = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$scraper$2f$upworkScraper$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["scrapeUpworkJobs"])({
                 url,
                 limit,
-                sortBy
+                sortBy,
+                credentials: credentials || {
+                    email: process.env.UPWORK_EMAIL,
+                    password: process.env.UPWORK_PASSWORD
+                }
             });
             if (jobs.length === 0) {
-                console.log('[API] No jobs found, returning mock data');
-                jobs = (0, __TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$scraper$2f$upworkScraper$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["generateMockJobs"])(limit);
+                console.log('[API] No jobs found');
                 status = 'partial';
-                message = 'No jobs found on the page. Showing sample data for demonstration. This could be due to Upwork blocking automated access or the search returning no results.';
+                message = 'No jobs found on the page. This could be due to no matching results or the search query returning empty results.';
             }
         } catch (scrapeError) {
             console.error('[API] Scrape error:', scrapeError.message);
-            jobs = (0, __TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$scraper$2f$upworkScraper$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["generateMockJobs"])(limit);
-            status = 'partial';
-            message = `Scraping failed: ${scrapeError.message}. Showing sample data for demonstration.`;
+            status = 'error';
+            message = `Scraping failed: ${scrapeError.message}`;
+            return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$server$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["NextResponse"].json({
+                error: message,
+                jobs: [],
+                totalFound: 0,
+                scrapedCount: 0,
+                status
+            }, {
+                status: 500
+            });
         }
         (0, __TURBOPACK__imported__module__$5b$project$5d2f$lib$2f$storage$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["setJobs"])(jobs);
         return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$server$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["NextResponse"].json({

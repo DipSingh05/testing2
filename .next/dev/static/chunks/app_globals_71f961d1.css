@@ -748,11 +748,6 @@ img, video {
   color: rgb(217 119 6 / var(--tw-text-opacity, 1));
 }
 
-.text-amber-800 {
-  --tw-text-opacity: 1;
-  color: rgb(146 64 14 / var(--tw-text-opacity, 1));
-}
-
 .text-blue-600 {
   --tw-text-opacity: 1;
   color: rgb(37 99 235 / var(--tw-text-opacity, 1));
@@ -894,7 +889,7 @@ img, video {
 
 body {
   background-color: hsl(var(--background));
-  color: hsl(var(--foreground));
+  color: #000;
 }
 
 .hover\:bg-blue-700:hover {

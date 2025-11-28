@@ -183,7 +183,6 @@ export default function Home() {
           <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
             <div>
-              <h4 className="font-medium text-amber-800">Demo Mode</h4>
               <p className="text-sm text-amber-600">{statusMessage}</p>
             </div>
           </div>

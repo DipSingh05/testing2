@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { scrapeUpworkJobs, generateMockJobs } from '../../../lib/scraper/upworkScraper.js';
+import { scrapeUpworkJobs } from '../../../lib/scraper/upworkScraper.js';
 import { setJobs, getJobs } from '../../../lib/storage.js';
 import { scrapeRequestSchema } from '../../../lib/schema.js';
 
@@ -7,7 +7,7 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const validatedData = scrapeRequestSchema.parse(body);
-    const { url, limit, sortBy } = validatedData;
+    const { url, limit, sortBy, credentials } = validatedData;
 
     console.log(`[API] Scrape request: ${url}, limit: ${limit}, sortBy: ${sortBy}`);
 
@@ -16,19 +16,37 @@ export async function POST(request) {
     let message = undefined;
 
     try {
-      jobs = await scrapeUpworkJobs({ url, limit, sortBy });
+      // Pass credentials to scraper if provided
+      jobs = await scrapeUpworkJobs({ 
+        url, 
+        limit, 
+        sortBy,
+        credentials: credentials || {
+          email: process.env.UPWORK_EMAIL,
+          password: process.env.UPWORK_PASSWORD
+        }
+      });
 
       if (jobs.length === 0) {
-        console.log('[API] No jobs found, returning mock data');
-        jobs = generateMockJobs(limit);
+        console.log('[API] No jobs found');
         status = 'partial';
-        message = 'No jobs found on the page. Showing sample data for demonstration. This could be due to Upwork blocking automated access or the search returning no results.';
+        message = 'No jobs found on the page. This could be due to no matching results or the search query returning empty results.';
       }
     } catch (scrapeError) {
       console.error('[API] Scrape error:', scrapeError.message);
-      jobs = generateMockJobs(limit);
-      status = 'partial';
-      message = `Scraping failed: ${scrapeError.message}. Showing sample data for demonstration.`;
+      status = 'error';
+      message = `Scraping failed: ${scrapeError.message}`;
+      
+      return NextResponse.json(
+        { 
+          error: message,
+          jobs: [],
+          totalFound: 0,
+          scrapedCount: 0,
+          status 
+        },
+        { status: 500 }
+      );
     }
 
     setJobs(jobs);
